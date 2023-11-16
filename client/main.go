@@ -12,10 +12,10 @@ const (
 
 func main() {
 
+	client := Client{}
+
 	ip := net.ParseIP(ServerHost)
 	addr := net.TCPAddr{IP: ip, Port: ServerPort, Zone: ""}
-
-	client := Client{}
 
 	err := client.Connect(addr)
 	if err != nil {

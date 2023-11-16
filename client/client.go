@@ -17,8 +17,8 @@ type Client struct {
 }
 
 type ChatClient interface {
-	Connect()
-	Run()
+	Connect(addr net.TCPAddr) error
+	Run() error
 	SendMsgs()
 	ReceiveMsgs()
 }
@@ -84,13 +84,13 @@ func (client *Client) Run() error {
 func (client Client) SendMsgs(sendChan <-chan string, errChan chan<- ClientError) {
 	for {
 		msg := <-sendChan
-		numBytes, err := client.Connection.Write([]byte(msg))
+		n, err := client.Connection.Write([]byte(msg))
 		if err != nil {
 			errChan <- ClientError{Message: "Could not send message"}
 			break
 		}
-		if numBytes != len(msg) {
-			errMsg := fmt.Sprintf("Problem sending message, len(msg) = %v, numBytes = %v\n", len(msg), numBytes)
+		if n != len(msg) {
+			errMsg := fmt.Sprintf("Incorrect number of bytes written. %v bytes written instead of %v\n", n, len(msg))
 			errChan <- ClientError{Message: errMsg}
 			break
 		}
@@ -103,14 +103,14 @@ func (client Client) ReceiveMsgs(recvChan chan<- string, errChan chan<- ClientEr
 	buffer := make([]byte, 1024)
 
 	for {
-		numBytes, err := client.Connection.Read(buffer)
+		n, err := client.Connection.Read(buffer)
 		if err != nil {
 			fmt.Println(err)
 			errChan <- ClientError{Message: "Could not receive message from server"}
 			break
 		}
 
-		msg := string(buffer[:numBytes])
+		msg := string(buffer[:n])
 		recvChan <- msg
 	}
 }
