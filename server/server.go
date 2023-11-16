@@ -81,6 +81,7 @@ func (server *Server) SendMsgs() error {
 			if err != nil {
 				return err
 			}
+			fmt.Println("Sending: ", msg)
 		}
 	}
 }

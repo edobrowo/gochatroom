@@ -1,27 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
-	"os"
 )
-
-func TCPJoinHostPort(addr net.TCPAddr) string {
-	return fmt.Sprintf("%v:%v", addr.IP, addr.Port)
-}
-
-type Client struct {
-	ServerAddr net.TCPAddr
-	Connection net.Conn
-}
-
-type ChatClient interface {
-	Connect(addr net.TCPAddr) error
-	Run() error
-	SendMsgs()
-	ReceiveMsgs()
-}
 
 type ClientError struct {
 	Message string
@@ -31,103 +13,142 @@ func (err *ClientError) Error() string {
 	return err.Message
 }
 
+func TCPJoinHostPort(addr net.TCPAddr) string {
+	return fmt.Sprintf("%v:%v", addr.IP, addr.Port)
+}
+
+type MessageIO interface {
+	GetInput(chan<- Message)
+	DisplayOutput(<-chan Message)
+}
+
+type Client struct {
+	ServerAddr net.TCPAddr
+	Connection net.Conn
+	User       MessageIO
+}
+
+type ClientStatusCode int
+
+const (
+	Connected ClientStatusCode = iota
+	Sending
+	Receiving
+	Disconnected
+	ErrorState
+	Unknown
+)
+
+type ClientStatus struct {
+	Code  ClientStatusCode
+	Error error
+}
+
 func (client *Client) Connect(addr net.TCPAddr) error {
+	if client.User == nil {
+		return &ClientError{Message: "Client requires interaction handler"}
+	}
+
 	if addr.IP == nil {
 		return &net.AddrError{Err: "Address cannot be empty", Addr: TCPJoinHostPort(client.ServerAddr)}
 	}
-	if addr.Port == 0 {
-		return &net.AddrError{Err: "Port cannot be 0", Addr: TCPJoinHostPort(client.ServerAddr)}
-	}
 
-	client.ServerAddr = addr
-
-	connection, err := net.Dial("tcp", TCPJoinHostPort(client.ServerAddr))
+	connection, err := net.Dial("tcp", TCPJoinHostPort(addr))
 	if err != nil {
 		return err
 	}
 
+	client.ServerAddr = addr
 	client.Connection = connection
 
-	return nil
+	sender := make(chan Message)
+	receiver := make(chan Message)
+	status := make(chan ClientStatus)
+
+	go client.Send(sender, status)
+	go client.Receive(receiver, status)
+
+	go client.User.GetInput(sender)
+	go client.User.DisplayOutput(receiver)
+
+	done := make(chan ClientStatus)
+
+	go client.Monitor(status, done)
+
+	status <- ClientStatus{Code: Connected}
+
+	// TODO : support reconnection
+
+	result := <-done
+
+	close(sender)
+	close(receiver)
+	close(status)
+	close(done)
+	client.Connection.Close()
+
+	return result.Error
 }
 
-func (client *Client) Run() error {
-	if client.Connection == nil {
-		return &ClientError{Message: "Client connection must be specified"}
-	}
-
-	sendChan := make(chan string)
-	recvChan := make(chan string)
-	errChan := make(chan ClientError)
-
-	go client.SendMsgs(sendChan, errChan)
-	go client.ReceiveMsgs(recvChan, errChan)
-
-	go GetUserInput(sendChan)
-	go DisplayOutput(recvChan)
-
+func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatus) {
 	for {
-		clientErr, ok := <-errChan
-		if ok {
-			break
-		} else {
-			close(sendChan)
-			close(recvChan)
-			fmt.Println(clientErr)
-			return &clientErr
+		switch statusVal := <-status; statusVal.Code {
+		case Connected:
+			fmt.Println("Connected to ", TCPJoinHostPort(client.ServerAddr))
+			continue
+		case Sending:
+			continue
+		case Receiving:
+			continue
+		case Disconnected:
+			done <- ClientStatus{Code: Disconnected}
+			return
+		case ErrorState:
+			done <- ClientStatus{Code: ErrorState, Error: statusVal.Error}
+		case Unknown:
+			fallthrough
+		default:
+			done <- ClientStatus{Code: Unknown}
+			return
 		}
 	}
-
-	return nil
 }
 
-func (client Client) SendMsgs(sendChan <-chan string, errChan chan<- ClientError) {
+func (client Client) Send(sender <-chan Message, status chan<- ClientStatus) {
 	for {
-		msg := <-sendChan
-		n, err := client.Connection.Write([]byte(msg))
+		msg := <-sender
+
+		status <- ClientStatus{Code: Sending}
+
+		n, err := client.Connection.Write([]byte(msg.Content))
 		if err != nil {
-			errChan <- ClientError{Message: "Could not send message"}
-			break
+			errMsg := "Could not send message"
+			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+			return
 		}
-		if n != len(msg) {
-			errMsg := fmt.Sprintf("Incorrect number of bytes written. %v bytes written instead of %v\n", n, len(msg))
-			errChan <- ClientError{Message: errMsg}
-			break
+		if n != len(msg.Content) {
+			errMsg := fmt.Sprintf("Incorrect number of bytes written. %v bytes written instead of %v\n", n, len(msg.Content))
+			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+			return
 		}
 	}
 }
 
-// use something other than error channel (i.e., a state channel). Can do this once simple commands are added
-// then there can be an exit command that would actually necessitate such a channel
-func (client Client) ReceiveMsgs(recvChan chan<- string, errChan chan<- ClientError) {
+func (client Client) Receive(receiver chan<- Message, status chan<- ClientStatus) {
 	buffer := make([]byte, 1024)
 
 	for {
 		n, err := client.Connection.Read(buffer)
 		if err != nil {
-			fmt.Println(err)
-			errChan <- ClientError{Message: "Could not receive message from server"}
+			errMsg := "Could not receive message from server"
+			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
 			break
 		}
 
-		msg := string(buffer[:n])
-		recvChan <- msg
-	}
-}
+		status <- ClientStatus{Code: Receiving}
 
-func GetUserInput(sendChan chan<- string) {
-	scanner := bufio.NewScanner(os.Stdin)
-
-	for {
-		scanner.Scan()
-		userInput := scanner.Text()
-		sendChan <- userInput
-	}
-}
-
-func DisplayOutput(recvChan <-chan string) {
-	for {
-		msg := <-recvChan
-		fmt.Println(msg)
+		msgContent := string(buffer[:n])
+		msg := Message{Content: msgContent}
+		receiver <- msg
 	}
 }

@@ -12,7 +12,7 @@ const (
 
 func main() {
 
-	client := Client{}
+	client := Client{User: CLIChat{}}
 
 	ip := net.ParseIP(ServerHost)
 	addr := net.TCPAddr{IP: ip, Port: ServerPort, Zone: ""}
@@ -23,9 +23,4 @@ func main() {
 		return
 	}
 
-	err = client.Run()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
 }
