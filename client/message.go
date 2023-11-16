@@ -8,7 +8,8 @@ const (
 )
 
 type Message struct {
-	MsgType    MessageType
-	SenderName string
-	Content    string
+	MsgType      MessageType
+	SenderName   string
+	ReceiverName string
+	Content      string
 }

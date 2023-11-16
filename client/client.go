@@ -18,14 +18,8 @@ func TCPJoinHostPort(addr net.TCPAddr) string {
 }
 
 type MessageIO interface {
-	GetInput(chan<- Message)
+	GetInput(chan<- string)
 	DisplayOutput(<-chan Message)
-}
-
-type Client struct {
-	ServerAddr net.TCPAddr
-	Connection net.Conn
-	User       MessageIO
 }
 
 type ClientStatusCode int
@@ -44,9 +38,20 @@ type ClientStatus struct {
 	Error error
 }
 
+type Client struct {
+	ServerAddr net.TCPAddr
+	Connection net.Conn
+	Username   string
+	IO         MessageIO
+}
+
 func (client *Client) Connect(addr net.TCPAddr) error {
-	if client.User == nil {
+	if client.IO == nil {
 		return &ClientError{Message: "Client requires interaction handler"}
+	}
+
+	if client.Username == "" {
+		return &ClientError{Message: "User requires name"}
 	}
 
 	if addr.IP == nil {
@@ -61,15 +66,15 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 	client.ServerAddr = addr
 	client.Connection = connection
 
-	sender := make(chan Message)
+	sender := make(chan string)
 	receiver := make(chan Message)
 	status := make(chan ClientStatus)
 
 	go client.Send(sender, status)
 	go client.Receive(receiver, status)
 
-	go client.User.GetInput(sender)
-	go client.User.DisplayOutput(receiver)
+	go client.IO.GetInput(sender)
+	go client.IO.DisplayOutput(receiver)
 
 	done := make(chan ClientStatus)
 
@@ -94,7 +99,7 @@ func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatu
 	for {
 		switch statusVal := <-status; statusVal.Code {
 		case Connected:
-			fmt.Println("Connected to ", TCPJoinHostPort(client.ServerAddr))
+			fmt.Printf("Connected to %v as %v\n", TCPJoinHostPort(client.ServerAddr), client.Username)
 			continue
 		case Sending:
 			continue
@@ -114,9 +119,13 @@ func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatu
 	}
 }
 
-func (client Client) Send(sender <-chan Message, status chan<- ClientStatus) {
+func (client Client) Send(sender <-chan string, status chan<- ClientStatus) {
 	for {
-		msg := <-sender
+		input := <-sender
+
+		// TODO : parse here
+
+		msg := Message{SenderName: client.Username, Content: input}
 
 		status <- ClientStatus{Code: Sending}
 

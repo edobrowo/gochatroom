@@ -8,14 +8,13 @@ import (
 
 type CLIChat struct{}
 
-func (cli CLIChat) GetInput(sender chan<- Message) {
+func (cli CLIChat) GetInput(sender chan<- string) {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
 		scanner.Scan()
 		userInput := scanner.Text()
-		msg := Message{Content: userInput}
-		sender <- msg
+		sender <- userInput
 	}
 }
 
