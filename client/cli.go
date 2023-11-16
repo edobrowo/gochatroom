@@ -8,6 +8,8 @@ import (
 
 type CLIChat struct{}
 
+// TODO : make the CLI nicer
+
 func (cli CLIChat) GetInput(sender chan<- string) {
 	scanner := bufio.NewScanner(os.Stdin)
 
