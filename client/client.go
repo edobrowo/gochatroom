@@ -123,23 +123,28 @@ func (client Client) Send(sender <-chan string, status chan<- ClientStatus) {
 	for {
 		input := <-sender
 
-		// TODO : parse here
-
 		msg := Message{SenderName: client.Username, Content: input}
+		buf, err := Serialize(msg)
+		if err != nil {
+			errMsg := "Could not seralize message"
+			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+			return
+		}
 
 		status <- ClientStatus{Code: Sending}
 
-		n, err := client.Connection.Write([]byte(msg.Content))
+		_, err = client.Connection.Write(buf)
 		if err != nil {
 			errMsg := "Could not send message"
 			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
 			return
 		}
-		if n != len(msg.Content) {
+
+		/*if n != len(buf) {
 			errMsg := fmt.Sprintf("Incorrect number of bytes written. %v bytes written instead of %v\n", n, len(msg.Content))
 			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
 			return
-		}
+		}*/
 	}
 }
 
@@ -147,17 +152,22 @@ func (client Client) Receive(receiver chan<- Message, status chan<- ClientStatus
 	buffer := make([]byte, 1024)
 
 	for {
-		n, err := client.Connection.Read(buffer)
+		_, err := client.Connection.Read(buffer)
 		if err != nil {
 			errMsg := "Could not receive message from server"
 			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
-			break
+			return
 		}
 
 		status <- ClientStatus{Code: Receiving}
 
-		msgContent := string(buffer[:n])
-		msg := Message{Content: msgContent}
+		msg, err := Parse(buffer)
+		if err != nil {
+			errMsg := "Could not parse message from server"
+			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+			return
+		}
+
 		receiver <- msg
 	}
 }

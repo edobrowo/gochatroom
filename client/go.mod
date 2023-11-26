@@ -1,3 +1,3 @@
-module edobrowo/gochatroom-client
+module github.com/edobrowo/chatroomClient
 
 go 1.20
