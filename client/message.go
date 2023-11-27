@@ -11,7 +11,8 @@ type MessageType int
 
 const (
 	MsgType_Broadcast MessageType = 0
-	MsgType_Whisper   MessageType = 1
+	MsgType_Whisper   MessageType = 1 // TODO : could generalize to "command", but that would require changing the entire binary structure
+	MsgType_Server    MessageType = 2
 )
 
 type Message struct {

@@ -9,6 +9,7 @@ import (
 type CLIChat struct{}
 
 // TODO : make the CLI nicer
+// TODO : add whisper command
 
 func (cli CLIChat) GetInput(sender chan<- string) {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -23,6 +24,6 @@ func (cli CLIChat) GetInput(sender chan<- string) {
 func (cli CLIChat) DisplayOutput(receiver <-chan Message) {
 	for {
 		msg := <-receiver
-		fmt.Println(msg.Content)
+		fmt.Printf("%v: %v\n", msg.SenderName, msg.Content)
 	}
 }

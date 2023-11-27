@@ -1,8 +1,9 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net"
+	"os"
 )
 
 const (
@@ -17,9 +18,7 @@ func main() {
 	ip := net.ParseIP(ServerHost)
 	addr := net.TCPAddr{IP: ip, Port: ServerPort, Zone: ""}
 
-	err := server.Listen(addr)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	server.Log = log.New(os.Stdout, "gochatroom-server:", log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
+
+	server.Listen(addr)
 }

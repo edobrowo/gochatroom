@@ -82,8 +82,6 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 
 	status <- ClientStatus{Code: Connected}
 
-	// TODO : support reconnection
-
 	result := <-done
 
 	close(sender)
@@ -100,7 +98,6 @@ func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatu
 		switch statusVal := <-status; statusVal.Code {
 		case Connected:
 			fmt.Printf("Connected to %v as %v\n", TCPJoinHostPort(client.ServerAddr), client.Username)
-			continue
 		case Sending:
 			continue
 		case Receiving:
@@ -110,6 +107,7 @@ func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatu
 			return
 		case ErrorState:
 			done <- ClientStatus{Code: ErrorState, Error: statusVal.Error}
+			return
 		case Unknown:
 			fallthrough
 		default:
