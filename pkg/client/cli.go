@@ -1,15 +1,16 @@
-package main
+package client
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+
+	"github.com/edobrowo/gochatroom/pkg/response"
 )
 
 type CLIChat struct{}
 
 // TODO : make the CLI nicer
-// TODO : add whisper command
 
 func (cli CLIChat) GetInput(sender chan<- string) {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -21,9 +22,9 @@ func (cli CLIChat) GetInput(sender chan<- string) {
 	}
 }
 
-func (cli CLIChat) DisplayOutput(receiver <-chan Message) {
+func (cli CLIChat) DisplayOutput(receiver <-chan response.Response) {
 	for {
-		msg := <-receiver
-		fmt.Printf("%v: %v\n", msg.SenderName, msg.Content)
+		res := <-receiver
+		fmt.Printf("%v: %v\n", res.SenderName, res.Content)
 	}
 }

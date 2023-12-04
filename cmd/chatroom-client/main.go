@@ -5,7 +5,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+
+	"github.com/edobrowo/gochatroom/pkg/client"
 )
+
+// TODO : comments :)
+// TODO : testing
+// TODO : readme
 
 const (
 	ServerHost = "127.0.0.1"
@@ -40,7 +46,7 @@ func main() {
 		}
 	}
 
-	client := Client{Username: username, IO: CLIChat{}}
+	client := client.Client{Username: username, IO: client.CLIChat{}}
 
 	ip := net.ParseIP(ServerHost)
 	addr := net.TCPAddr{IP: ip, Port: ServerPort, Zone: ""}

@@ -4,6 +4,8 @@ import (
 	"log"
 	"net"
 	"os"
+
+	"github.com/edobrowo/gochatroom/pkg/server"
 )
 
 const (
@@ -13,7 +15,7 @@ const (
 
 func main() {
 
-	server := Server{}
+	server := server.Server{}
 
 	ip := net.ParseIP(ServerHost)
 	addr := net.TCPAddr{IP: ip, Port: ServerPort, Zone: ""}

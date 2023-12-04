@@ -1,8 +1,11 @@
-package main
+package client
 
 import (
 	"fmt"
 	"net"
+
+	"github.com/edobrowo/gochatroom/pkg/request"
+	"github.com/edobrowo/gochatroom/pkg/response"
 )
 
 type ClientError struct {
@@ -19,7 +22,7 @@ func TCPJoinHostPort(addr net.TCPAddr) string {
 
 type MessageIO interface {
 	GetInput(chan<- string)
-	DisplayOutput(<-chan Message)
+	DisplayOutput(<-chan response.Response)
 }
 
 type ClientStatusCode int
@@ -67,18 +70,20 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 	client.Connection = connection
 
 	sender := make(chan string)
-	receiver := make(chan Message)
+	receiver := make(chan response.Response)
 	status := make(chan ClientStatus)
+	done := make(chan ClientStatus)
 
-	go client.Send(sender, status)
+	go client.Monitor(status, done)
+
+	registerMsg := request.Request{ReqType: request.RequestType_Status, StType: request.Status_Register, SenderName: client.Username}
+	client.Send(registerMsg, status)
+
+	go client.HandleInput(sender, status)
 	go client.Receive(receiver, status)
 
 	go client.IO.GetInput(sender)
 	go client.IO.DisplayOutput(receiver)
-
-	done := make(chan ClientStatus)
-
-	go client.Monitor(status, done)
 
 	status <- ClientStatus{Code: Connected}
 
@@ -117,36 +122,36 @@ func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatu
 	}
 }
 
-func (client Client) Send(sender <-chan string, status chan<- ClientStatus) {
+func (client Client) HandleInput(sender <-chan string, status chan<- ClientStatus) {
 	for {
 		input := <-sender
 
-		msg := Message{SenderName: client.Username, Content: input}
-		buf, err := Serialize(msg)
-		if err != nil {
-			errMsg := "Could not seralize message"
-			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
-			return
-		}
+		req := request.Parse(input)
+		req.SenderName = client.Username
 
-		status <- ClientStatus{Code: Sending}
-
-		_, err = client.Connection.Write(buf)
-		if err != nil {
-			errMsg := "Could not send message"
-			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
-			return
-		}
-
-		/*if n != len(buf) {
-			errMsg := fmt.Sprintf("Incorrect number of bytes written. %v bytes written instead of %v\n", n, len(msg.Content))
-			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
-			return
-		}*/
+		client.Send(req, status)
 	}
 }
 
-func (client Client) Receive(receiver chan<- Message, status chan<- ClientStatus) {
+func (client Client) Send(req request.Request, status chan<- ClientStatus) {
+	buf, err := request.Serialize(req)
+	if err != nil {
+		errMsg := "Could not seralize message"
+		status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+		return
+	}
+
+	status <- ClientStatus{Code: Sending}
+
+	_, err = client.Connection.Write(buf)
+	if err != nil {
+		errMsg := "Could not send message"
+		status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+		return
+	}
+}
+
+func (client Client) Receive(receiver chan<- response.Response, status chan<- ClientStatus) {
 	buffer := make([]byte, 1024)
 
 	for {
@@ -159,13 +164,13 @@ func (client Client) Receive(receiver chan<- Message, status chan<- ClientStatus
 
 		status <- ClientStatus{Code: Receiving}
 
-		msg, err := Parse(buffer)
+		res, err := response.Deserialize(buffer)
 		if err != nil {
 			errMsg := "Could not parse message from server"
 			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
 			return
 		}
 
-		receiver <- msg
+		receiver <- res
 	}
 }

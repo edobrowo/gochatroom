@@ -1,9 +1,12 @@
-package main
+package server
 
 import (
 	"fmt"
 	"log"
 	"net"
+
+	"github.com/edobrowo/gochatroom/pkg/request"
+	"github.com/edobrowo/gochatroom/pkg/response"
 )
 
 type ServerError struct {
@@ -34,22 +37,20 @@ type ServerStatus struct {
 }
 
 type ClientConn struct {
-	ID         int
-	Connection net.Conn
-	ClientAddr string
-	Username   string
-	SendQueue  chan Message
+	Connection    net.Conn
+	ClientAddr    string
+	Username      string
+	ResponseQueue chan response.Response
 }
 
 type Server struct {
 	ServerAddr  net.TCPAddr
 	Listener    net.Listener
 	Connections []ClientConn
-	NextID      int
-	Msgs        chan Message
+	Reqs        chan request.Request
 	Status      chan ServerStatus
 	Done        chan ServerStatus
-	ClientDone  chan int
+	ClientDone  chan string
 	Log         *log.Logger
 }
 
@@ -78,7 +79,7 @@ func (server *Server) Monitor() {
 
 func (server *Server) Reset() error {
 	for _, client := range server.Connections {
-		close(client.SendQueue)
+		close(client.ResponseQueue)
 		err := client.Connection.Close()
 		if err != nil {
 			server.Log.Fatalln(err)
@@ -87,12 +88,10 @@ func (server *Server) Reset() error {
 	}
 	server.Connections = make([]ClientConn, 0)
 
-	if server.Msgs != nil {
-		close(server.Msgs)
+	if server.Reqs != nil {
+		close(server.Reqs)
 	}
-	server.Msgs = make(chan Message)
-
-	server.NextID = 0
+	server.Reqs = make(chan request.Request)
 
 	return nil
 }
@@ -102,10 +101,10 @@ func (server *Server) Close() error {
 
 	close(server.Status)
 	close(server.Done)
-	close(server.Msgs)
+	close(server.Reqs)
 
 	for _, client := range server.Connections {
-		close(client.SendQueue)
+		close(client.ResponseQueue)
 		err := client.Connection.Close()
 		if err != nil {
 			return err
@@ -134,7 +133,7 @@ func (server *Server) Listen(addr net.TCPAddr) {
 
 	if server.ClientDone == nil {
 		server.Log.Println("Creating client close channel")
-		server.ClientDone = make(chan int)
+		server.ClientDone = make(chan string)
 		go server.RemoveClient()
 	}
 
@@ -158,7 +157,7 @@ func (server *Server) Listen(addr net.TCPAddr) {
 	server.Status <- ServerStatus{Code: Listening}
 
 	go server.AcceptClients()
-	go server.HandleMessages()
+	go server.HandleRequests()
 
 	result := <-server.Done
 	if result.Code == ErrorState {
@@ -189,63 +188,149 @@ func (server *Server) AcceptClients() {
 	}
 }
 
-func (server *Server) HandleMessages() {
-	for {
-		msg := <-server.Msgs
-		var receiver string
-		if msg.MsgType == 0 {
-			receiver = "ALL"
-		}
-		server.Log.Printf("Received message: type %v, from %v, to %v, content \"%v\"", msg.MsgType, msg.SenderName, receiver, msg.Content)
-		for _, client := range server.Connections {
-			client.SendQueue <- msg
-		}
+func BuildMessageResponse(req request.Request) response.Response {
+	res := response.Response{}
+	res.SenderName = req.SenderName
+	res.Content = req.Content
+	return res
+}
+
+func BuildCommandResponse(req request.Request) response.Response {
+	res := response.Response{}
+	res.SenderName = req.SenderName
+
+	switch req.CmdType {
+	case request.Command_Whisper:
+		res.ResType = response.ResponseType_Message
+		res.ReceiverName = req.ReceiverName
+		res.Content = req.Content
+		break
+	case request.Command_Ping:
+		res.ResType = response.ResponseType_Server
+		res.ReceiverName = req.SenderName
+		res.Content = "Pong!"
+		break
+	default:
+		res.ResType = response.ResponseType_Server
+		res.ReceiverName = req.SenderName
+		res.Content = "Unknown command"
+		break
+	}
+
+	return res
+}
+
+func BuildStatusResponse(req request.Request) response.Response {
+	res := response.Response{}
+	res.SenderName = req.SenderName
+
+	switch req.StType {
+	case request.Status_Register:
+		res.ResType = response.ResponseType_Server
+		res.ReceiverName = req.SenderName
+		res.Content = "Registered successfully"
+		break
+	default:
+		res.ResType = response.ResponseType_Server
+		res.ReceiverName = req.SenderName
+		res.Content = "Unknown command"
+		break
+	}
+
+	return res
+}
+
+func BuildResponse(req request.Request) response.Response {
+	res := response.Response{}
+
+	switch req.ReqType {
+	case request.RequestType_Message:
+		res = BuildMessageResponse(req)
+		break
+	case request.RequestType_Command:
+		res = BuildCommandResponse(req)
+		break
+	case request.RequestType_Status:
+		res = BuildStatusResponse(req)
+		break
+	default:
+		res.ResType = response.ResponseType_Server
+		res.ReceiverName = req.SenderName
+		res.Content = "Invalid request"
+		break
+	}
+
+	return res
+}
+
+func (server *Server) SendResponse(res response.Response) { // TODO : return to correct user set
+	for _, client := range server.Connections {
+		client.ResponseQueue <- res
 	}
 }
 
-func (client *ClientConn) Send(done chan<- int) {
+func (server *Server) HandleRequests() {
 	for {
-		msg, ok := <-client.SendQueue
+		req := <-server.Reqs
+
+		server.Log.Printf("Received message: type %v, from %v, content \"%v\"", req.ReqType, req.SenderName, req.Content)
+
+		res := BuildResponse(req)
+
+		if req.ReqType == request.RequestType_Status && req.StType == request.Status_Register {
+			for _, cc := range server.Connections {
+				if cc.ClientAddr == req.ClientAddr {
+					cc.Username = req.SenderName
+					server.Log.Printf("Registed user (username = %v, address = %v)\n", cc.Username, cc.ClientAddr)
+				}
+			}
+		}
+
+		server.SendResponse(res)
+	}
+}
+
+func (client *ClientConn) Send(done chan<- string) {
+	for {
+		res, ok := <-client.ResponseQueue
 		if !ok {
-			done <- client.ID
+			done <- client.Username
 			return
 		}
 
-		buf, err := Serialize(msg)
+		buf, err := response.Serialize(res)
 		if err != nil {
-			done <- client.ID
+			done <- client.Username
 			return
 		}
 
 		_, err = client.Connection.Write(buf)
 		if err != nil {
-			done <- client.ID
+			done <- client.Username
 			return
 		}
 	}
 }
 
-func (client *ClientConn) Receive(msgs chan<- Message, done chan<- int) {
+func (client *ClientConn) Receive(reqs chan<- request.Request, done chan<- string) {
 	buffer := make([]byte, 1024)
 
 	for {
 		_, err := client.Connection.Read(buffer)
 		if err != nil {
-			done <- client.ID
+			done <- client.Username
 			return
 		}
 
-		msg, err := Parse(buffer)
+		req, err := request.Deserialize(buffer)
 		if err != nil {
-			done <- client.ID
+			done <- client.Username
 			return
 		}
 
-		if client.Username != msg.SenderName {
-			client.Username = msg.SenderName
-		}
+		req.ClientAddr = client.ClientAddr
 
-		msgs <- msg
+		reqs <- req
 	}
 }
 
@@ -255,40 +340,36 @@ func (server *Server) AddClient(conn net.Conn) error {
 		return &ServerError{Message: "Client network must be TCP"}
 	}
 
-	client := ClientConn{ID: server.NextID, Connection: conn, ClientAddr: addr.String(), SendQueue: make(chan Message)}
+	client := ClientConn{Connection: conn, ClientAddr: addr.String(), ResponseQueue: make(chan response.Response)}
 
 	server.Connections = append(server.Connections, client)
-
-	if server.NextID >= 1000000 {
-		return &ServerError{Message: "Ran out of IDs"}
-	}
-	server.NextID = server.NextID + 1
 
 	server.Log.Println("Client connected: ", client.ClientAddr)
 
 	go server.Connections[len(server.Connections)-1].Send(server.ClientDone)
-	go server.Connections[len(server.Connections)-1].Receive(server.Msgs, server.ClientDone)
-
-	// TODO : add server messages (e.g., "User has connected!")
+	go server.Connections[len(server.Connections)-1].Receive(server.Reqs, server.ClientDone)
 
 	return nil
 }
 
 func (server *Server) RemoveClient() {
 	for {
-		id := <-server.ClientDone
+		username := <-server.ClientDone // TODO : investigate why username isn't being set
 		for i, cc := range server.Connections {
-			if cc.ID == id {
+			if cc.Username == username {
 				server.Connections[i] = server.Connections[len(server.Connections)-1]
 				server.Connections = server.Connections[:len(server.Connections)-1]
-				close(cc.SendQueue)
+				close(cc.ResponseQueue)
 				err := cc.Connection.Close()
 				if err != nil {
 					server.Log.Fatalln("Client connection could not be closed: ", err)
 					server.Status <- ServerStatus{Code: ErrorState, Error: err}
 					return
 				}
-				server.Log.Printf("Client (ID = %v, username = %v, address = %v) disconnected\n", cc.ID, cc.Username, cc.ClientAddr)
+				server.Log.Printf("Client (username = %v, address = %v) disconnected\n", username, cc.ClientAddr)
+
+				disconnectResponse := response.Response{ResType: response.ResponseType_Server, Content: fmt.Sprintf("%v has disconnected", cc.Username)}
+				server.SendResponse(disconnectResponse)
 			}
 		}
 	}
