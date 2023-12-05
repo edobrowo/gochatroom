@@ -9,10 +9,6 @@ import (
 	"github.com/edobrowo/gochatroom/pkg/client"
 )
 
-// TODO : comments :)
-// TODO : testing
-// TODO : readme
-
 const (
 	ServerHost = "127.0.0.1"
 	ServerPort = 9988
@@ -46,11 +42,13 @@ func main() {
 		}
 	}
 
-	client := client.Client{Username: username, IO: client.CLIChat{}}
+	// Must specify username and CLIChat interface before starting the client
+	client := client.Client{Username: username, IO: &client.CLIChat{Username: username}}
 
 	ip := net.ParseIP(ServerHost)
 	addr := net.TCPAddr{IP: ip, Port: ServerPort, Zone: ""}
 
+	// Client code controls request/response loop
 	err := client.Connect(addr)
 	if err != nil {
 		fmt.Println(err)

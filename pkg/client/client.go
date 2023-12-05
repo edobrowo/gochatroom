@@ -21,7 +21,10 @@ func TCPJoinHostPort(addr net.TCPAddr) string {
 }
 
 type MessageIO interface {
+	// Takes raw input
 	GetInput(chan<- string)
+
+	// Displays responses to the UI
 	DisplayOutput(<-chan response.Response)
 }
 
@@ -69,17 +72,30 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 	client.ServerAddr = addr
 	client.Connection = connection
 
+	// Unprocessed chat inputs
 	sender := make(chan string)
+
+	// Parsed responses
 	receiver := make(chan response.Response)
+
+	// State machine channel, functionally a wrapper for the done channel
 	status := make(chan ClientStatus)
+
+	// Indicates that the client should terminate
 	done := make(chan ClientStatus)
 
+	// Monitor goroutine controls the client state machine
 	go client.Monitor(status, done)
 
+	// Must send an initial request to register the user's username, which serves as their ID
+	// TODO: UNIQUE USERNAMES
 	registerMsg := request.Request{ReqType: request.RequestType_Status, StType: request.Status_Register, SenderName: client.Username}
 	client.Send(registerMsg, status)
 
+	// Receives unprocessed input, parses it, and sends to server
 	go client.HandleInput(sender, status)
+
+	// Receives and deserializes responses from the server
 	go client.Receive(receiver, status)
 
 	go client.IO.GetInput(sender)
@@ -87,6 +103,7 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 
 	status <- ClientStatus{Code: Connected}
 
+	// Once a status is received from done, the client terminates
 	result := <-done
 
 	close(sender)
@@ -98,6 +115,7 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 	return result.Error
 }
 
+// Controls the client state machine
 func (client Client) Monitor(status <-chan ClientStatus, done chan<- ClientStatus) {
 	for {
 		switch statusVal := <-status; statusVal.Code {

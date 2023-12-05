@@ -8,11 +8,11 @@ import (
 	"github.com/edobrowo/gochatroom/pkg/response"
 )
 
-type CLIChat struct{}
+type CLIChat struct {
+	Username string
+}
 
-// TODO : make the CLI nicer
-
-func (cli CLIChat) GetInput(sender chan<- string) {
+func (cli *CLIChat) GetInput(sender chan<- string) {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
@@ -22,9 +22,32 @@ func (cli CLIChat) GetInput(sender chan<- string) {
 	}
 }
 
-func (cli CLIChat) DisplayOutput(receiver <-chan response.Response) {
+func (cli *CLIChat) DisplayOutput(receiver <-chan response.Response) {
 	for {
 		res := <-receiver
-		fmt.Printf("%v: %v\n", res.SenderName, res.Content)
+		var str string
+
+		switch res.ResType {
+		case response.ResponseType_Message:
+			str = fmt.Sprintf("%v: %v", res.SenderName, res.Content)
+			break
+		case response.ResponseType_Whisper:
+			if res.ReceiverName == cli.Username {
+				str = fmt.Sprintf("from %v: %v", res.SenderName, res.Content)
+			} else if res.SenderName == cli.Username {
+				str = fmt.Sprintf("to %v: %v", res.ReceiverName, res.Content)
+			}
+			break
+		case response.ResponseType_ServerPriv:
+			str = fmt.Sprintf("from SERVER: %v", res.Content)
+			break
+		case response.ResponseType_ServerAll:
+			str = fmt.Sprintf("SERVER: %v", res.Content)
+			break
+		default:
+			str = "Unknown response"
+		}
+
+		fmt.Println(str)
 	}
 }

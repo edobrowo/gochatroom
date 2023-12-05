@@ -8,8 +8,17 @@ import (
 type ResponseType int
 
 const (
+	// Message to be broadcast to all users
 	ResponseType_Message ResponseType = 0
-	ResponseType_Server  ResponseType = 1
+
+	// Message is private
+	ResponseType_Whisper ResponseType = 1
+
+	// Response from the server to a particular user
+	ResponseType_ServerPriv ResponseType = 2
+
+	// Response from the server to all users
+	ResponseType_ServerAll ResponseType = 3
 )
 
 type Response struct {
@@ -27,6 +36,7 @@ func Serialize(res Response) ([]byte, error) {
 		return nil, err
 	}
 
+	// Strings are serialized as a length followed by character array
 	err = binary.Write(buffer, binary.LittleEndian, uint32(len(res.SenderName)))
 	if err != nil {
 		return nil, err
@@ -75,6 +85,7 @@ func Deserialize(buffer []byte) (Response, error) {
 	}
 	res.ResType = ResponseType(resType)
 
+	// Strings are deserialized by first reading the length then reading the character array
 	err = binary.Read(reader, binary.LittleEndian, &strLength)
 	if err != nil {
 		return Response{}, err

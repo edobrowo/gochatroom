@@ -22,5 +22,6 @@ func main() {
 
 	server.Log = log.New(os.Stdout, "gochatroom-server:", log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
 
+	// Server code controls request/response loop
 	server.Listen(addr)
 }

@@ -54,6 +54,7 @@ type Server struct {
 	Log         *log.Logger
 }
 
+// Controls the server state machine
 func (server *Server) Monitor() {
 	for {
 		switch statusVal := <-server.Status; statusVal.Code {
@@ -77,6 +78,7 @@ func (server *Server) Monitor() {
 	}
 }
 
+// Cleans up and re-initializes server resources; used on boot or if the address is changed
 func (server *Server) Reset() error {
 	for _, client := range server.Connections {
 		close(client.ResponseQueue)
@@ -96,6 +98,7 @@ func (server *Server) Reset() error {
 	return nil
 }
 
+// Cleans up server resources; used on server close
 func (server *Server) Close() error {
 	server.Log.Println("Closing server")
 
@@ -119,18 +122,22 @@ func (server *Server) Close() error {
 	return nil
 }
 
+// Primary listening loop
 func (server *Server) Listen(addr net.TCPAddr) {
+	// State machine channel, functionally a wrapper for done channel
 	if server.Status == nil {
 		server.Log.Println("Creating status channel")
 		server.Status = make(chan ServerStatus)
 		go server.Monitor()
 	}
 
+	// Indicates that the server should terminate
 	if server.Done == nil {
 		server.Log.Println("Creating close channel")
 		server.Done = make(chan ServerStatus)
 	}
 
+	// Tells the server to close a client connection
 	if server.ClientDone == nil {
 		server.Log.Println("Creating client close channel")
 		server.ClientDone = make(chan string)
@@ -146,6 +153,7 @@ func (server *Server) Listen(addr net.TCPAddr) {
 		return
 	}
 
+	// Begin listening for client connections
 	server.ServerAddr = addr
 	listener, err := net.Listen("tcp", TCPJoinHostPort(server.ServerAddr))
 	if err != nil {
@@ -156,7 +164,10 @@ func (server *Server) Listen(addr net.TCPAddr) {
 	server.Listener = listener
 	server.Status <- ServerStatus{Code: Listening}
 
+	// Used to add new client connections to the server
 	go server.AcceptClients()
+
+	// Central goroutine to handle all requests
 	go server.HandleRequests()
 
 	result := <-server.Done
@@ -201,17 +212,17 @@ func BuildCommandResponse(req request.Request) response.Response {
 
 	switch req.CmdType {
 	case request.Command_Whisper:
-		res.ResType = response.ResponseType_Message
+		res.ResType = response.ResponseType_Whisper
 		res.ReceiverName = req.ReceiverName
 		res.Content = req.Content
 		break
 	case request.Command_Ping:
-		res.ResType = response.ResponseType_Server
+		res.ResType = response.ResponseType_ServerPriv
 		res.ReceiverName = req.SenderName
 		res.Content = "Pong!"
 		break
 	default:
-		res.ResType = response.ResponseType_Server
+		res.ResType = response.ResponseType_ServerPriv
 		res.ReceiverName = req.SenderName
 		res.Content = "Unknown command"
 		break
@@ -226,12 +237,11 @@ func BuildStatusResponse(req request.Request) response.Response {
 
 	switch req.StType {
 	case request.Status_Register:
-		res.ResType = response.ResponseType_Server
-		res.ReceiverName = req.SenderName
-		res.Content = "Registered successfully"
+		res.ResType = response.ResponseType_ServerAll
+		res.Content = fmt.Sprintf("%v has connected", req.SenderName)
 		break
 	default:
-		res.ResType = response.ResponseType_Server
+		res.ResType = response.ResponseType_ServerPriv
 		res.ReceiverName = req.SenderName
 		res.Content = "Unknown command"
 		break
@@ -240,6 +250,7 @@ func BuildStatusResponse(req request.Request) response.Response {
 	return res
 }
 
+// Builds a response conditionally based on a request
 func BuildResponse(req request.Request) response.Response {
 	res := response.Response{}
 
@@ -254,7 +265,7 @@ func BuildResponse(req request.Request) response.Response {
 		res = BuildStatusResponse(req)
 		break
 	default:
-		res.ResType = response.ResponseType_Server
+		res.ResType = response.ResponseType_ServerPriv
 		res.ReceiverName = req.SenderName
 		res.Content = "Invalid request"
 		break
@@ -263,7 +274,44 @@ func BuildResponse(req request.Request) response.Response {
 	return res
 }
 
-func (server *Server) SendResponse(res response.Response) { // TODO : return to correct user set
+func (server *Server) SendResponse(res response.Response) {
+	// Send only to the requesting user
+	if res.ResType == response.ResponseType_ServerPriv {
+		for _, client := range server.Connections {
+			if client.Username == res.ReceiverName {
+				client.ResponseQueue <- res
+			}
+		}
+		return
+	}
+
+	// Send only to the sending user, and to receiving user if valid
+	if res.ResType == response.ResponseType_Whisper {
+		var sender, receiver ClientConn
+		for i, client := range server.Connections {
+			if client.Username == res.SenderName {
+				sender = server.Connections[i]
+			}
+			if client.Username == res.ReceiverName {
+				receiver = server.Connections[i]
+			}
+		}
+
+		if receiver.Username == "" {
+			res.ResType = response.ResponseType_ServerPriv
+			res.Content = fmt.Sprintf("User %v does not exist", res.ReceiverName)
+
+			// Just send to sender since receiver is invalid
+			sender.ResponseQueue <- res
+		} else {
+			sender.ResponseQueue <- res
+			receiver.ResponseQueue <- res
+		}
+
+		return
+	}
+
+	// Otherwise send to all users (in the case of ResponseType_Message and ResponseType_ServerAll)
 	for _, client := range server.Connections {
 		client.ResponseQueue <- res
 	}
@@ -273,15 +321,16 @@ func (server *Server) HandleRequests() {
 	for {
 		req := <-server.Reqs
 
-		server.Log.Printf("Received message: type %v, from %v, content \"%v\"", req.ReqType, req.SenderName, req.Content)
+		server.Log.Printf("request: type %v from %v", req.ReqType, req.SenderName)
 
 		res := BuildResponse(req)
 
+		// If the user is registering, find their connection and set the username field
 		if req.ReqType == request.RequestType_Status && req.StType == request.Status_Register {
-			for _, cc := range server.Connections {
-				if cc.ClientAddr == req.ClientAddr {
-					cc.Username = req.SenderName
-					server.Log.Printf("Registed user (username = %v, address = %v)\n", cc.Username, cc.ClientAddr)
+			for i := range server.Connections {
+				if server.Connections[i].ClientAddr == req.ClientAddr {
+					server.Connections[i].Username = req.SenderName
+					server.Log.Printf("Registered user (username = %v, address = %v)\n", server.Connections[i].Username, server.Connections[i].ClientAddr)
 				}
 			}
 		}
@@ -346,7 +395,10 @@ func (server *Server) AddClient(conn net.Conn) error {
 
 	server.Log.Println("Client connected: ", client.ClientAddr)
 
+	// Each client has a Send goroutine for sending responses to
 	go server.Connections[len(server.Connections)-1].Send(server.ClientDone)
+
+	// Each client has a Receive goroutine for receiving requests from
 	go server.Connections[len(server.Connections)-1].Receive(server.Reqs, server.ClientDone)
 
 	return nil
@@ -354,11 +406,13 @@ func (server *Server) AddClient(conn net.Conn) error {
 
 func (server *Server) RemoveClient() {
 	for {
-		username := <-server.ClientDone // TODO : investigate why username isn't being set
+		username := <-server.ClientDone
 		for i, cc := range server.Connections {
 			if cc.Username == username {
+				// Use a simple replace-with-last policy
 				server.Connections[i] = server.Connections[len(server.Connections)-1]
 				server.Connections = server.Connections[:len(server.Connections)-1]
+
 				close(cc.ResponseQueue)
 				err := cc.Connection.Close()
 				if err != nil {
@@ -366,9 +420,11 @@ func (server *Server) RemoveClient() {
 					server.Status <- ServerStatus{Code: ErrorState, Error: err}
 					return
 				}
+
 				server.Log.Printf("Client (username = %v, address = %v) disconnected\n", username, cc.ClientAddr)
 
-				disconnectResponse := response.Response{ResType: response.ResponseType_Server, Content: fmt.Sprintf("%v has disconnected", cc.Username)}
+				// Manually send a response to all users indicating that a user has disconnected
+				disconnectResponse := response.Response{ResType: response.ResponseType_ServerAll, Content: fmt.Sprintf("%v has disconnected", cc.Username)}
 				server.SendResponse(disconnectResponse)
 			}
 		}

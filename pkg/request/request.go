@@ -9,22 +9,32 @@ import (
 type RequestType int
 
 const (
+	// Message request is a message from one user to be displayed to one or more other users
 	RequestType_Message RequestType = 0
+
+	// Command request is a directive to the server to perform some action, or to limit the number of users who receives a message
 	RequestType_Command RequestType = 1
-	RequestType_Status  RequestType = 2
+
+	// Status request is a directive to the server to perform a housekeeping task, namely registering a username
+	RequestType_Status RequestType = 2
 )
 
 type CommandType int
 
 const (
+	// Private message another user
 	Command_Whisper CommandType = 1
-	Command_Ping    CommandType = 2
+
+	// Pong!
+	Command_Ping CommandType = 2
+
 	Command_Unknown CommandType = 3
 )
 
 type StatusType int
 
 const (
+	// Associates a connection to a username
 	Status_Register StatusType = 0
 )
 
@@ -41,6 +51,7 @@ type Request struct {
 func Parse(str string) Request {
 	req := Request{}
 
+	// Strings are commands if they are prefixed with / without trimming
 	requestIsCommand := strings.HasPrefix(str, "/")
 
 	commands := map[string]CommandType{
@@ -52,30 +63,30 @@ func Parse(str string) Request {
 	}
 
 	if requestIsCommand {
-		i := strings.IndexByte(str, ' ')
-		if i == -1 {
-			i = len(str)
-		}
+		req.ReqType = RequestType_Command
 
-		commandStr := str[1:i]
-		command, ok := commands[commandStr]
+		tokens := strings.Split(str[1:], " ")
+
+		command, ok := commands[tokens[0]]
 		if !ok {
 			command = Command_Unknown
 		}
-
-		req.ReqType = RequestType_Command
 
 		switch command {
 		case Command_Whisper:
 			req.CmdType = Command_Whisper
 
-			j := strings.IndexByte(str[i+1:], ' ')
-			if j == -1 {
-				j = len(str)
+			if len(tokens) < 2 {
+				req.ReceiverName = ""
+				req.Content = ""
+			} else if len(tokens) < 3 {
+				req.ReceiverName = tokens[1]
+				req.Content = ""
+			} else {
+				req.ReceiverName = tokens[1]
+				req.Content = strings.Join(tokens[2:], " ")
 			}
 
-			req.ReceiverName = str[i : i+j]
-			req.Content = str[j:]
 			break
 		case Command_Ping:
 			req.CmdType = Command_Ping
@@ -110,6 +121,7 @@ func Serialize(req Request) ([]byte, error) {
 		return nil, err
 	}
 
+	// Strings are serialized as a length followed by character array
 	err = binary.Write(buffer, binary.LittleEndian, uint32(len(req.SenderName)))
 	if err != nil {
 		return nil, err
@@ -172,6 +184,7 @@ func Deserialize(buffer []byte) (Request, error) {
 	}
 	req.StType = StatusType(stType)
 
+	// Strings are deserialized by first reading the length then reading the character array
 	err = binary.Read(reader, binary.LittleEndian, &strLength)
 	if err != nil {
 		return Request{}, err
