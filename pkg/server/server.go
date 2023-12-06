@@ -274,11 +274,11 @@ func BuildResponse(req request.Request) response.Response {
 	return res
 }
 
-func (server *Server) SendResponse(res response.Response) {
+func (server *Server) SendResponse(res response.Response, addr string) {
 	// Send only to the requesting user
-	if res.ResType == response.ResponseType_ServerPriv {
+	if res.ResType == response.ResponseType_ServerPriv || res.ResType == response.ResponseType_TerminateConnection {
 		for _, client := range server.Connections {
-			if client.Username == res.ReceiverName {
+			if client.ClientAddr == addr {
 				client.ResponseQueue <- res
 			}
 		}
@@ -325,17 +325,29 @@ func (server *Server) HandleRequests() {
 
 		res := BuildResponse(req)
 
-		// If the user is registering, find their connection and set the username field
+		// If the user is registering, enforce username uniqueness, then find their connection and set the username field
 		if req.ReqType == request.RequestType_Status && req.StType == request.Status_Register {
-			for i := range server.Connections {
-				if server.Connections[i].ClientAddr == req.ClientAddr {
-					server.Connections[i].Username = req.SenderName
-					server.Log.Printf("Registered user (username = %v, address = %v)\n", server.Connections[i].Username, server.Connections[i].ClientAddr)
+			usernameExists := false
+			for _, cc := range server.Connections {
+				if cc.Username == req.SenderName {
+					res.ResType = response.ResponseType_TerminateConnection
+					server.SendResponse(res, req.ClientAddr)
+					usernameExists = true
+					break
+				}
+			}
+
+			if !usernameExists {
+				for i := range server.Connections {
+					if server.Connections[i].ClientAddr == req.ClientAddr {
+						server.Connections[i].Username = req.SenderName
+						server.Log.Printf("Registered user (username = %v, address = %v)\n", server.Connections[i].Username, server.Connections[i].ClientAddr)
+					}
 				}
 			}
 		}
 
-		server.SendResponse(res)
+		server.SendResponse(res, req.ClientAddr)
 	}
 }
 
@@ -343,19 +355,19 @@ func (client *ClientConn) Send(done chan<- string) {
 	for {
 		res, ok := <-client.ResponseQueue
 		if !ok {
-			done <- client.Username
+			done <- client.ClientAddr
 			return
 		}
 
 		buf, err := response.Serialize(res)
 		if err != nil {
-			done <- client.Username
+			done <- client.ClientAddr
 			return
 		}
 
 		_, err = client.Connection.Write(buf)
 		if err != nil {
-			done <- client.Username
+			done <- client.ClientAddr
 			return
 		}
 	}
@@ -367,13 +379,13 @@ func (client *ClientConn) Receive(reqs chan<- request.Request, done chan<- strin
 	for {
 		_, err := client.Connection.Read(buffer)
 		if err != nil {
-			done <- client.Username
+			done <- client.ClientAddr
 			return
 		}
 
 		req, err := request.Deserialize(buffer)
 		if err != nil {
-			done <- client.Username
+			done <- client.ClientAddr
 			return
 		}
 
@@ -406,9 +418,9 @@ func (server *Server) AddClient(conn net.Conn) error {
 
 func (server *Server) RemoveClient() {
 	for {
-		username := <-server.ClientDone
+		addr := <-server.ClientDone
 		for i, cc := range server.Connections {
-			if cc.Username == username {
+			if cc.ClientAddr == addr {
 				// Use a simple replace-with-last policy
 				server.Connections[i] = server.Connections[len(server.Connections)-1]
 				server.Connections = server.Connections[:len(server.Connections)-1]
@@ -421,11 +433,13 @@ func (server *Server) RemoveClient() {
 					return
 				}
 
-				server.Log.Printf("Client (username = %v, address = %v) disconnected\n", username, cc.ClientAddr)
+				server.Log.Printf("Client (username = %v, address = %v) disconnected\n", cc.Username, cc.ClientAddr)
 
 				// Manually send a response to all users indicating that a user has disconnected
-				disconnectResponse := response.Response{ResType: response.ResponseType_ServerAll, Content: fmt.Sprintf("%v has disconnected", cc.Username)}
-				server.SendResponse(disconnectResponse)
+				if cc.Username != "" {
+					disconnectResponse := response.Response{ResType: response.ResponseType_ServerAll, Content: fmt.Sprintf("%v has disconnected", cc.Username)}
+					server.SendResponse(disconnectResponse, cc.ClientAddr)
+				}
 			}
 		}
 	}

@@ -19,6 +19,9 @@ const (
 
 	// Response from the server to all users
 	ResponseType_ServerAll ResponseType = 3
+
+	// Indicates to the client to close its connection
+	ResponseType_TerminateConnection ResponseType = 4
 )
 
 type Response struct {

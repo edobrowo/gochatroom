@@ -88,15 +88,18 @@ func (client *Client) Connect(addr net.TCPAddr) error {
 	go client.Monitor(status, done)
 
 	// Must send an initial request to register the user's username, which serves as their ID
-	// TODO: UNIQUE USERNAMES
-	registerMsg := request.Request{ReqType: request.RequestType_Status, StType: request.Status_Register, SenderName: client.Username}
-	client.Send(registerMsg, status)
+	req := request.Request{ReqType: request.RequestType_Status, StType: request.Status_Register, SenderName: client.Username}
+	client.Send(req, status)
+	res, err := client.Receive()
+	if err != nil || res.ResType == response.ResponseType_TerminateConnection {
+		return err
+	}
 
 	// Receives unprocessed input, parses it, and sends to server
 	go client.HandleInput(sender, status)
 
 	// Receives and deserializes responses from the server
-	go client.Receive(receiver, status)
+	go client.HandleResponses(receiver, status)
 
 	go client.IO.GetInput(sender)
 	go client.IO.DisplayOutput(receiver)
@@ -169,23 +172,33 @@ func (client Client) Send(req request.Request, status chan<- ClientStatus) {
 	}
 }
 
-func (client Client) Receive(receiver chan<- response.Response, status chan<- ClientStatus) {
+func (client Client) Receive() (response.Response, error) {
 	buffer := make([]byte, 1024)
 
+	_, err := client.Connection.Read(buffer)
+	if err != nil {
+		return response.Response{}, &ClientError{Message: "Could not receive message from server"}
+	}
+
+	res, err := response.Deserialize(buffer)
+	if err != nil {
+		return response.Response{}, &ClientError{Message: "Could not parse message from server"}
+	}
+
+	return res, nil
+}
+
+func (client Client) HandleResponses(receiver chan<- response.Response, status chan<- ClientStatus) {
+
 	for {
-		_, err := client.Connection.Read(buffer)
+		res, err := client.Receive()
 		if err != nil {
-			errMsg := "Could not receive message from server"
-			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+			status <- ClientStatus{Code: ErrorState, Error: err}
 			return
 		}
 
-		status <- ClientStatus{Code: Receiving}
-
-		res, err := response.Deserialize(buffer)
-		if err != nil {
-			errMsg := "Could not parse message from server"
-			status <- ClientStatus{Code: ErrorState, Error: &ClientError{Message: errMsg}}
+		if res.ResType == response.ResponseType_TerminateConnection {
+			status <- ClientStatus{Code: Disconnected}
 			return
 		}
 
